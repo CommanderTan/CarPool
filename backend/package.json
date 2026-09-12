@@ -1,0 +1,9 @@
+{
+  "name": "car-pool-local-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local development API for the Car Pool Flutter application",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

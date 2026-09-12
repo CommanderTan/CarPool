@@ -1,6 +1,6 @@
 {
-    "name": "ride_share_v1",
-    "short_name": "ride_share_v1",
+    "name": "car_pool",
+    "short_name": "car_pool",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
