@@ -2,7 +2,12 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = 'http://localhost:3000/api';
+  static String get baseUrl {
+    const customUrl = String.fromEnvironment('API_BASE_URL');
+    if (customUrl.isNotEmpty) return customUrl;
+    return 'http://localhost:3000/api';
+  }
+
 
   static const Duration _timeout = Duration(seconds: 10);
   final http.Client _client = http.Client();
@@ -14,13 +19,15 @@ class ApiService {
     };
   }
 
-  Future<bool> verifyStudent(String prn, DateTime dateOfBirth) async {
+  Future<bool> verifyStudent(String prn, DateTime dateOfBirth, {String? rollNumber}) async {
     try {
       final response = await _client.post(
         Uri.parse('$baseUrl/auth/verify-student'),
         headers: _getHeaders(),
         body: jsonEncode({
           'prn': prn,
+          if (rollNumber != null && rollNumber.isNotEmpty) 'rollNumber': rollNumber,
+          if (rollNumber != null && rollNumber.isNotEmpty) 'rollNum': rollNumber,
           'dateOfBirth': dateOfBirth.toIso8601String(),
         }),
       ).timeout(_timeout);
@@ -29,11 +36,19 @@ class ApiService {
         final data = jsonDecode(response.body);
         return data['verified'] ?? false;
       }
+      if (response.statusCode == 400 || response.statusCode == 403) {
+        final data = jsonDecode(response.body);
+        if (data['error'] != null) {
+          throw Exception(data['error']);
+        }
+      }
       return false;
     } catch (e) {
+      if (e is Exception) rethrow;
       throw Exception('Student verification failed: $e');
     }
   }
+
 
   Future<Map<String, dynamic>> createUser(Map<String, dynamic> userData) async {
     try {

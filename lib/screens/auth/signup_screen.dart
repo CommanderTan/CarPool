@@ -17,6 +17,7 @@ class _SignupScreenState extends State<SignupScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _prnController = TextEditingController();
+  final _rollNumberController = TextEditingController();
   final _mobileController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
@@ -42,6 +43,7 @@ class _SignupScreenState extends State<SignupScreen> {
     _nameController.dispose();
     _emailController.dispose();
     _prnController.dispose();
+    _rollNumberController.dispose();
     _mobileController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -98,6 +100,7 @@ class _SignupScreenState extends State<SignupScreen> {
         password: _passwordController.text,
         name: _nameController.text.trim(),
         prn: _prnController.text.trim(),
+        rollNumber: _rollNumberController.text.trim(),
         dateOfBirth: _selectedDate!,
         division: _selectedDivision!,
         department: _selectedDepartment!,
@@ -197,6 +200,24 @@ class _SignupScreenState extends State<SignupScreen> {
                     return null;
                   },
                 ),
+                const SizedBox(height: 16),
+                CustomTextField(
+                  controller: _rollNumberController,
+                  label: 'Roll Number',
+                  hintText: 'Enter your Roll Number (e.g. 21164)',
+                  keyboardType: TextInputType.number,
+                  prefixIcon: Icons.numbers_outlined,
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Please enter your Roll Number';
+                    }
+                    if (int.tryParse(value.trim()) == null) {
+                      return 'Please enter a valid numeric Roll Number';
+                    }
+                    return null;
+                  },
+                ),
+
                 const SizedBox(height: 16),
                 GestureDetector(
                   onTap: _selectDate,

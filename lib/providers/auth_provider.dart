@@ -104,6 +104,7 @@ class AuthProvider extends ChangeNotifier {
     required String password,
     required String name,
     required String prn,
+    required String rollNumber,
     required DateTime dateOfBirth,
     required String division,
     required String department,
@@ -116,16 +117,30 @@ class AuthProvider extends ChangeNotifier {
     try {
       // Try to verify student with backend
       try {
-        final bool isVerified = await _apiService.verifyStudent(prn, dateOfBirth);
+        final bool isVerified = await _apiService.verifyStudent(
+          prn,
+          dateOfBirth,
+          rollNumber: rollNumber,
+        );
         if (!isVerified) {
-          _errorMessage = 'Student verification failed. Please check your PRN and DOB.';
+          _errorMessage = 'Student verification failed. Please check your PRN, Roll Number, and DOB.';
           _isLoading = false;
           notifyListeners();
           return false;
         }
       } catch (e) {
-        // Backend unavailable - skip verification for testing
-        debugPrint('Student verification skipped (backend unavailable): $e');
+        final errorStr = e.toString().replaceAll('Exception: ', '');
+        if (errorStr.contains('registered') ||
+            errorStr.contains('Access denied') ||
+            errorStr.contains('match') ||
+            errorStr.contains('PRN') ||
+            errorStr.contains('Roll')) {
+          _errorMessage = errorStr;
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+        debugPrint('Student verification error (handled): $e');
       }
 
       final UserCredential credential = await _auth.createUserWithEmailAndPassword(
@@ -146,6 +161,8 @@ class AuthProvider extends ChangeNotifier {
             'name': name,
             'email': email,
             'prn': prn,
+            'rollNumber': rollNumber,
+            'rollNum': rollNumber,
             'dateOfBirth': dateOfBirth.toIso8601String(),
             'division': division,
             'department': department,
@@ -161,6 +178,7 @@ class AuthProvider extends ChangeNotifier {
             name: name,
             email: email,
             prn: prn,
+            rollNumber: rollNumber,
             dateOfBirth: dateOfBirth,
             division: division,
             department: department,
@@ -188,6 +206,7 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
     }
   }
+
 
   Future<void> signOut() async {
     await _auth.signOut();

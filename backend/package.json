@@ -3,10 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "description": "Local development API for the Car Pool Flutter application",
+  "main": "server.js",
+  "engines": {
+    "node": "20"
+  },
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "@e965/xlsx": "^0.20.3"
+    "@e965/xlsx": "^0.20.3",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "firebase-admin": "^14.5.0",
+    "firebase-functions": "^7.4.0"
   }
 }
+

@@ -7,6 +7,7 @@ class UserModel {
   final String division;
   final String department;
   final String prn;
+  final String rollNumber;
   final String mobileNumber;
   final double rating;
   final int totalRides;
@@ -21,6 +22,7 @@ class UserModel {
     required this.division,
     required this.department,
     required this.prn,
+    this.rollNumber = '',
     required this.mobileNumber,
     this.rating = 0.0,
     this.totalRides = 0,
@@ -37,6 +39,7 @@ class UserModel {
       division: json['division'] ?? '',
       department: json['department'] ?? '',
       prn: json['prn'] ?? '',
+      rollNumber: json['rollNumber']?.toString() ?? json['rollNum']?.toString() ?? '',
       mobileNumber: json['mobileNumber'] ?? '',
       rating: (json['rating'] ?? 0.0).toDouble(),
       totalRides: json['totalRides'] ?? 0,
@@ -54,6 +57,7 @@ class UserModel {
       'division': division,
       'department': department,
       'prn': prn,
+      'rollNumber': rollNumber,
       'mobileNumber': mobileNumber,
       'rating': rating,
       'totalRides': totalRides,
@@ -70,6 +74,7 @@ class UserModel {
     String? division,
     String? department,
     String? prn,
+    String? rollNumber,
     String? mobileNumber,
     double? rating,
     int? totalRides,
@@ -84,6 +89,7 @@ class UserModel {
       division: division ?? this.division,
       department: department ?? this.department,
       prn: prn ?? this.prn,
+      rollNumber: rollNumber ?? this.rollNumber,
       mobileNumber: mobileNumber ?? this.mobileNumber,
       rating: rating ?? this.rating,
       totalRides: totalRides ?? this.totalRides,
@@ -91,3 +97,4 @@ class UserModel {
     );
   }
 }
+
