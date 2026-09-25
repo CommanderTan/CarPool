@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:provider/provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -44,6 +47,8 @@ class _HomeScreenState extends State<HomeScreen> {
   LatLng? _currentLatLng;
   bool _locationLoading = true;
   String? _locationError;
+  LatLng? _targetLatLng;
+  bool _isGettingAddress = false;
 
   String _getGreeting() {
     var hour = DateTime.now().hour;
@@ -105,9 +110,6 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      // Default fallback location (India)
-      const fallbackLatLng = LatLng(20.5937, 78.9629);
-
       // Try last known position first for a quick result
       final lastPosition = await Geolocator.getLastKnownPosition();
       if (lastPosition != null && mounted) {
@@ -150,6 +152,45 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         }
       }
+    }
+  }
+
+  Future<void> _onSetDropLocation() async {
+    if (_targetLatLng == null) return;
+
+    setState(() {
+      _isGettingAddress = true;
+    });
+
+    String address = 'Selected on Map';
+    try {
+      List<Placemark> placemarks = await Geocoding().placemarkFromCoordinates(
+        _targetLatLng!.latitude,
+        _targetLatLng!.longitude,
+      );
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+        address = '${place.name}, ${place.subLocality}, ${place.locality}'
+            .replaceAll(RegExp(r'^,\s*|,\s*,\s*|,\s*$'), '');
+        if (address.isEmpty || address == ', ') {
+          address = place.street ?? 'Selected on Map';
+        }
+      }
+    } catch (e) {
+      // Ignore geocoding errors, just use default
+    }
+
+    setState(() {
+      _isGettingAddress = false;
+    });
+
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => FindRideScreen(initialDropLocation: address),
+        ),
+      );
     }
   }
 
@@ -279,11 +320,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildIllustrationBanner() {
     return Container(
-      height: 180,
+      height: 300,
       width: double.infinity,
       decoration: BoxDecoration(
         color: const Color(0xFFEFF7EF),
         borderRadius: BorderRadius.circular(20),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
       ),
       clipBehavior: Clip.antiAlias,
       child: _locationLoading
@@ -353,26 +401,37 @@ class _HomeScreenState extends State<HomeScreen> {
                   onMapCreated: (controller) {
                     _mapController = controller;
                   },
-                  liteModeEnabled: true,
-                  myLocationEnabled: false,
+                  onCameraMove: (position) {
+                    _targetLatLng = position.target;
+                  },
+                  myLocationEnabled: true,
                   myLocationButtonEnabled: false,
                   zoomControlsEnabled: false,
                   mapToolbarEnabled: false,
                   compassEnabled: false,
-                  scrollGesturesEnabled: false,
-                  zoomGesturesEnabled: false,
-                  tiltGesturesEnabled: false,
-                  rotateGesturesEnabled: false,
+                  scrollGesturesEnabled: true,
+                  zoomGesturesEnabled: true,
+                  gestureRecognizers: {
+                    Factory<OneSequenceGestureRecognizer>(
+                      () => EagerGestureRecognizer(),
+                    ),
+                  },
                   markers: {
                     Marker(
                       markerId: const MarkerId('current_location'),
                       position: _currentLatLng!,
                       icon: BitmapDescriptor.defaultMarkerWithHue(
-                        BitmapDescriptor.hueGreen,
+                        BitmapDescriptor.hueBlue,
                       ),
                       infoWindow: const InfoWindow(title: 'You are here'),
                     ),
                   },
+                ),
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.only(bottom: 40),
+                    child: Icon(Icons.location_on, color: Colors.red, size: 44),
+                  ),
                 ),
                 Positioned(
                   bottom: 10,
@@ -396,6 +455,39 @@ class _HomeScreenState extends State<HomeScreen> {
                         size: 22,
                       ),
                     ),
+                  ),
+                ),
+                Positioned(
+                  bottom: 10,
+                  left: 10,
+                  right: 50,
+                  child: ElevatedButton(
+                    onPressed: _isGettingAddress ? null : _onSetDropLocation,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primaryGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 4,
+                    ),
+                    child: _isGettingAddress
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Text(
+                            'Set Drop Location',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
                   ),
                 ),
               ],

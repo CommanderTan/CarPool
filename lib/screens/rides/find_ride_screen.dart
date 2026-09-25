@@ -7,9 +7,14 @@ import '../../models/ride_model.dart';
 import '../../widgets/custom_text_field.dart';
 import '../../widgets/custom_button.dart';
 import 'ride_detail_screen.dart';
+import 'package:dio/dio.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'dart:async';
 
 class FindRideScreen extends StatefulWidget {
-  const FindRideScreen({super.key});
+  final String? initialDropLocation;
+  const FindRideScreen({super.key, this.initialDropLocation});
 
   @override
   State<FindRideScreen> createState() => _FindRideScreenState();
@@ -23,7 +28,65 @@ class _FindRideScreenState extends State<FindRideScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialDropLocation != null) {
+      _dropController.text = widget.initialDropLocation!;
+    }
+    _autoDetectPickup();
     _fetchRides();
+  }
+
+  Future<void> _autoDetectPickup() async {
+    _pickupController.text = 'Detecting location...';
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _pickupController.text = '';
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+          _pickupController.text = '';
+          return;
+        }
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 5),
+        ),
+      );
+
+      List<Placemark> placemarks = await Geocoding().placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+        String address = '${place.name}, ${place.subLocality}, ${place.locality}'
+            .replaceAll(RegExp(r'^,\s*|,\s*,\s*|,\s*$'), '');
+        if (address.isEmpty || address == ', ') {
+          address = place.street ?? 'Unknown Location';
+        }
+        if (mounted) {
+          setState(() {
+            _pickupController.text = address;
+          });
+        }
+      } else {
+        _pickupController.text = '';
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _pickupController.text = '';
+        });
+      }
+    }
   }
 
   @override
@@ -71,6 +134,93 @@ class _FindRideScreenState extends State<FindRideScreen> {
     }
   }
 
+  Future<List<String>> _getSuggestions(String query) async {
+    if (query.length < 3) return [];
+    try {
+      final response = await Dio().get(
+        'https://nominatim.openstreetmap.org/search',
+        queryParameters: {
+          'q': query,
+          'format': 'json',
+          'limit': 5,
+        },
+        options: Options(
+          headers: {'User-Agent': 'CarPoolApp/1.0'},
+        ),
+      );
+      if (response.statusCode == 200) {
+        final List data = response.data;
+        return data.map((e) => e['display_name'].toString()).toList();
+      }
+    } catch (e) {
+      debugPrint('Geocoding error: $e');
+    }
+    return [];
+  }
+
+  Widget _buildAutocompleteField({
+    required TextEditingController controller,
+    required String label,
+    required String hintText,
+    required IconData prefixIcon,
+  }) {
+    return RawAutocomplete<String>(
+      textEditingController: controller,
+      focusNode: FocusNode(),
+      optionsBuilder: (TextEditingValue textEditingValue) async {
+        if (textEditingValue.text.isEmpty) {
+          return const Iterable<String>.empty();
+        }
+        return await _getSuggestions(textEditingValue.text);
+      },
+      onSelected: (String selection) {
+        controller.text = selection;
+      },
+      fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController,
+          FocusNode fieldFocusNode, VoidCallback onFieldSubmitted) {
+        return CustomTextField(
+          controller: fieldTextEditingController,
+          focusNode: fieldFocusNode,
+          label: label,
+          hintText: hintText,
+          prefixIcon: prefixIcon,
+        );
+      },
+      optionsViewBuilder: (BuildContext context, AutocompleteOnSelected<String> onSelected, Iterable<String> options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4.0,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              constraints: const BoxConstraints(maxHeight: 200),
+              width: MediaQuery.of(context).size.width - 40,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (BuildContext context, int index) {
+                  final String option = options.elementAt(index);
+                  return InkWell(
+                    onTap: () => onSelected(option),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Text(option, style: const TextStyle(fontSize: 14)),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final rideProvider = Provider.of<RideProvider>(context);
@@ -101,14 +251,14 @@ class _FindRideScreenState extends State<FindRideScreen> {
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   children: [
-                    CustomTextField(
+                    _buildAutocompleteField(
                       controller: _pickupController,
                       label: 'Pickup Location',
                       hintText: 'Enter pickup location',
                       prefixIcon: Icons.my_location,
                     ),
                     const SizedBox(height: 12),
-                    CustomTextField(
+                    _buildAutocompleteField(
                       controller: _dropController,
                       label: 'Drop Location',
                       hintText: 'Enter drop location',
