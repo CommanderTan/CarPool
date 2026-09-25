@@ -1,7 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:car_pool/providers/auth_provider.dart';
+import 'package:car_pool/providers/ride_provider.dart';
 import 'package:car_pool/screens/rides/find_ride_screen.dart';
 import 'package:car_pool/screens/rides/create_ride_screen.dart';
 import 'package:car_pool/screens/cab_sharing/cab_sharing_screen.dart';
+import 'package:car_pool/screens/history/ride_history_screen.dart';
+import 'package:car_pool/screens/chat/chat_screen.dart';
+import 'package:car_pool/models/user_model.dart';
+import 'package:car_pool/models/ride_model.dart';
 
 class AppColors {
   static const primaryGreen = Color(0xFF3C8C3C);
@@ -23,11 +32,134 @@ class AppColors {
   static const completedText = Color(0xFF1E5FBF);
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  GoogleMapController? _mapController;
+  LatLng? _currentLatLng;
+  bool _locationLoading = true;
+  String? _locationError;
+
+  String _getGreeting() {
+    var hour = DateTime.now().hour;
+    if (hour < 12) {
+      return 'Good Morning,';
+    }
+    if (hour < 17) {
+      return 'Good Afternoon,';
+    }
+    return 'Good Evening,';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _getCurrentLocation();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final user = context.read<AuthProvider>().currentUser;
+      if (user != null) {
+        context.read<RideProvider>().fetchMyRides(user.id);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _mapController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _getCurrentLocation() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _locationError = 'Location services are disabled';
+          _locationLoading = false;
+        });
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() {
+            _locationError = 'Location permission denied';
+            _locationLoading = false;
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          _locationError = 'Location permission permanently denied';
+          _locationLoading = false;
+        });
+        return;
+      }
+
+      // Default fallback location (India)
+      const fallbackLatLng = LatLng(20.5937, 78.9629);
+
+      // Try last known position first for a quick result
+      final lastPosition = await Geolocator.getLastKnownPosition();
+      if (lastPosition != null && mounted) {
+        setState(() {
+          _currentLatLng = LatLng(
+            lastPosition.latitude,
+            lastPosition.longitude,
+          );
+          _locationLoading = false;
+        });
+      }
+
+      // Now try to get the current position with a timeout
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+
+      if (mounted) {
+        setState(() {
+          _currentLatLng = LatLng(position.latitude, position.longitude);
+          _locationLoading = false;
+        });
+
+        _mapController?.animateCamera(CameraUpdate.newLatLng(_currentLatLng!));
+      }
+    } catch (e) {
+      if (mounted) {
+        // If we already have a position from lastKnown, keep it
+        if (_currentLatLng != null) {
+          setState(() => _locationLoading = false);
+        } else {
+          // Fall back to a default location so the map still loads
+          setState(() {
+            _currentLatLng = const LatLng(20.5937, 78.9629);
+            _locationError = null;
+            _locationLoading = false;
+          });
+        }
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final user = context.watch<AuthProvider>().currentUser;
+    final rideRequests = context.watch<RideProvider>().rideRequests;
+    final myRides = context.watch<RideProvider>().myRides;
+    final notificationCount = rideRequests.length;
+
     return Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
@@ -35,19 +167,19 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildTopBar(),
+              _buildTopBar(user, notificationCount),
               const SizedBox(height: 24),
-              _buildGreeting(),
+              _buildGreeting(user?.name ?? 'User'),
               const SizedBox(height: 16),
               _buildIllustrationBanner(),
               const SizedBox(height: 24),
               _buildActionCardsRow(context),
               const SizedBox(height: 20),
-              _buildOngoingRideCard(),
+              _buildOngoingRideCard(myRides),
               const SizedBox(height: 20),
-              _buildQuickActionsCard(),
+              _buildQuickActionsCard(context, notificationCount),
               const SizedBox(height: 20),
-              _buildRecentActivityCard(),
+              _buildRecentActivityCard(myRides),
               const SizedBox(height: 20),
             ],
           ),
@@ -56,7 +188,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildTopBar() {
+  Widget _buildTopBar(UserModel? user, int notificationCount) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -69,34 +201,43 @@ class HomeScreen extends StatelessWidget {
                 color: const Color(0xFFEFF7EF),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: const Icon(Icons.directions_car_filled,
-                  color: AppColors.primaryGreen, size: 26),
+              child: const Icon(
+                Icons.directions_car_filled,
+                color: AppColors.primaryGreen,
+                size: 26,
+              ),
             ),
             const SizedBox(width: 10),
             RichText(
               text: const TextSpan(
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                ),
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
                 children: [
-                  TextSpan(text: 'Car', style: TextStyle(color: AppColors.textDark)),
-                  TextSpan(text: 'Pool', style: TextStyle(color: AppColors.primaryGreen)),
+                  TextSpan(
+                    text: 'Car',
+                    style: TextStyle(color: AppColors.textDark),
+                  ),
+                  TextSpan(
+                    text: 'Pool',
+                    style: TextStyle(color: AppColors.primaryGreen),
+                  ),
                 ],
               ),
             ),
           ],
         ),
         Row(
-          children: const [
-            _NotificationBell(count: 3),
-            SizedBox(width: 14),
+          children: [
+            _NotificationBell(count: notificationCount),
+            const SizedBox(width: 14),
             CircleAvatar(
               radius: 22,
-              backgroundColor: Color(0xFFE0E0E0),
-              backgroundImage: NetworkImage(
-                'https://i.pravatar.cc/150?img=13',
-              ),
+              backgroundColor: const Color(0xFFE0E0E0),
+              backgroundImage: (user != null && user.profilePictureUrl != null)
+                  ? NetworkImage(user.profilePictureUrl!)
+                  : null,
+              child: (user == null || user.profilePictureUrl == null)
+                  ? const Icon(Icons.person, color: Colors.white)
+                  : null,
             ),
           ],
         ),
@@ -104,30 +245,31 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildGreeting() {
+  Widget _buildGreeting(String name) {
+    final firstName = name.split(' ').first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: const [
+      children: [
         Text(
-          'Good evening,',
-          style: TextStyle(fontSize: 20, color: AppColors.textDark),
+          _getGreeting(),
+          style: const TextStyle(fontSize: 20, color: AppColors.textDark),
         ),
         Row(
           children: [
             Text(
-              'Vivek!',
-              style: TextStyle(
+              '$firstName!',
+              style: const TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.w800,
                 color: AppColors.textDark,
               ),
             ),
-            SizedBox(width: 8),
-            Text('👋', style: TextStyle(fontSize: 24)),
+            const SizedBox(width: 8),
+            const Text('👋', style: TextStyle(fontSize: 24)),
           ],
         ),
-        SizedBox(height: 6),
-        Text(
+        const SizedBox(height: 6),
+        const Text(
           'Where are you going today?',
           style: TextStyle(fontSize: 15, color: AppColors.textGrey),
         ),
@@ -137,16 +279,127 @@ class HomeScreen extends StatelessWidget {
 
   Widget _buildIllustrationBanner() {
     return Container(
-      height: 150,
+      height: 180,
       width: double.infinity,
       decoration: BoxDecoration(
         color: const Color(0xFFEFF7EF),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: const Center(
-        child: Icon(Icons.directions_car_filled,
-            size: 70, color: AppColors.primaryGreen),
-      ),
+      clipBehavior: Clip.antiAlias,
+      child: _locationLoading
+          ? const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      AppColors.primaryGreen,
+                    ),
+                  ),
+                  SizedBox(height: 10),
+                  Text(
+                    'Getting your location...',
+                    style: TextStyle(color: AppColors.textGrey, fontSize: 13),
+                  ),
+                ],
+              ),
+            )
+          : _locationError != null
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.location_off,
+                    size: 40,
+                    color: AppColors.textGrey,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _locationError!,
+                    style: const TextStyle(
+                      color: AppColors.textGrey,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _locationLoading = true;
+                        _locationError = null;
+                      });
+                      _getCurrentLocation();
+                    },
+                    child: const Text(
+                      'Retry',
+                      style: TextStyle(
+                        color: AppColors.primaryGreen,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : Stack(
+              children: [
+                GoogleMap(
+                  initialCameraPosition: CameraPosition(
+                    target: _currentLatLng!,
+                    zoom: 15,
+                  ),
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                  },
+                  liteModeEnabled: true,
+                  myLocationEnabled: false,
+                  myLocationButtonEnabled: false,
+                  zoomControlsEnabled: false,
+                  mapToolbarEnabled: false,
+                  compassEnabled: false,
+                  scrollGesturesEnabled: false,
+                  zoomGesturesEnabled: false,
+                  tiltGesturesEnabled: false,
+                  rotateGesturesEnabled: false,
+                  markers: {
+                    Marker(
+                      markerId: const MarkerId('current_location'),
+                      position: _currentLatLng!,
+                      icon: BitmapDescriptor.defaultMarkerWithHue(
+                        BitmapDescriptor.hueGreen,
+                      ),
+                      infoWindow: const InfoWindow(title: 'You are here'),
+                    ),
+                  },
+                ),
+                Positioned(
+                  bottom: 10,
+                  right: 10,
+                  child: GestureDetector(
+                    onTap: () {
+                      _getCurrentLocation();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: const [
+                          BoxShadow(color: Color(0x29000000), blurRadius: 4),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.my_location,
+                        color: AppColors.primaryGreen,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 
@@ -163,7 +416,10 @@ class HomeScreen extends StatelessWidget {
             subtitle: 'Search rides\nin your route',
             arrowColor: AppColors.findRideIcon,
             onTap: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const FindRideScreen()));
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const FindRideScreen()),
+              );
             },
           ),
         ),
@@ -178,7 +434,12 @@ class HomeScreen extends StatelessWidget {
             subtitle: 'Share your ride\nwith others',
             arrowColor: AppColors.createRideIcon,
             onTap: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const CreateRideScreen()));
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const CreateRideScreen(),
+                ),
+              );
             },
           ),
         ),
@@ -193,7 +454,12 @@ class HomeScreen extends StatelessWidget {
             subtitle: 'Book a cab\nwith others',
             arrowColor: AppColors.cabSharingIcon,
             onTap: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const CabSharingScreen()));
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const CabSharingScreen(),
+                ),
+              );
             },
           ),
         ),
@@ -201,7 +467,14 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildOngoingRideCard() {
+  Widget _buildOngoingRideCard(List<RideModel> myRides) {
+    if (myRides.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final ride = myRides.first;
+    final timeStr =
+        "${ride.rideDate.hour}:${ride.rideDate.minute.toString().padLeft(2, '0')}";
+
     return _WhiteCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -225,12 +498,16 @@ class HomeScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
-                      children: const [
-                        Icon(Icons.circle, size: 10, color: AppColors.primaryGreen),
-                        SizedBox(width: 6),
+                      children: [
+                        const Icon(
+                          Icons.circle,
+                          size: 10,
+                          color: AppColors.primaryGreen,
+                        ),
+                        const SizedBox(width: 6),
                         Text(
-                          'Pickup at 8:30 AM',
-                          style: TextStyle(
+                          'Pickup at $timeStr',
+                          style: const TextStyle(
                             color: AppColors.primaryGreen,
                             fontWeight: FontWeight.w600,
                             fontSize: 13,
@@ -239,14 +516,20 @@ class HomeScreen extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 6),
-                    const Text(
-                      'PICT → Hinjawadi',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                    Text(
+                      '${ride.pickupLocation} → ${ride.dropLocation}',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'Today, 8:30 AM',
-                      style: TextStyle(color: AppColors.textGrey, fontSize: 13),
+                    Text(
+                      '${ride.rideDate.day}/${ride.rideDate.month}/${ride.rideDate.year}, $timeStr',
+                      style: const TextStyle(
+                        color: AppColors.textGrey,
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ),
@@ -255,14 +538,17 @@ class HomeScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.acceptedBg,
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Text(
-                      'Driver: Rahul S.',
-                      style: TextStyle(
+                    child: Text(
+                      'Driver: ${ride.driverName}',
+                      style: const TextStyle(
                         color: AppColors.acceptedText,
                         fontWeight: FontWeight.w600,
                         fontSize: 12,
@@ -271,18 +557,38 @@ class HomeScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   Row(
-                    children: const [
-                      Icon(Icons.person_outline, size: 16, color: AppColors.textGrey),
-                      SizedBox(width: 4),
-                      Text('2 / 4 seats', style: TextStyle(color: AppColors.textGrey, fontSize: 13)),
+                    children: [
+                      const Icon(
+                        Icons.person_outline,
+                        size: 16,
+                        color: AppColors.textGrey,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${ride.availableSeats} / ${ride.totalSeats} seats',
+                        style: const TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 13,
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 6),
                   Row(
-                    children: const [
-                      Icon(Icons.currency_rupee, size: 16, color: AppColors.textGrey),
-                      SizedBox(width: 2),
-                      Text('60 per seat', style: TextStyle(color: AppColors.textGrey, fontSize: 13)),
+                    children: [
+                      const Icon(
+                        Icons.currency_rupee,
+                        size: 16,
+                        color: AppColors.textGrey,
+                      ),
+                      const SizedBox(width: 2),
+                      Text(
+                        '${ride.farePerSeat} per seat',
+                        style: const TextStyle(
+                          color: AppColors.textGrey,
+                          fontSize: 13,
+                        ),
+                      ),
                     ],
                   ),
                 ],
@@ -294,14 +600,36 @@ class HomeScreen extends StatelessWidget {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () {},
-                  icon: const Icon(Icons.chat_bubble_outline, size: 18, color: AppColors.textDark),
-                  label: const Text('Chat with Driver',
-                      style: TextStyle(color: AppColors.textDark, fontWeight: FontWeight.w600)),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatScreen(
+                          rideId: ride.id,
+                          otherUserId: ride.driverId,
+                          otherUserName: ride.driverName,
+                        ),
+                      ),
+                    );
+                  },
+                  icon: const Icon(
+                    Icons.chat_bubble_outline,
+                    size: 18,
+                    color: AppColors.textDark,
+                  ),
+                  label: const Text(
+                    'Chat',
+                    style: TextStyle(
+                      color: AppColors.textDark,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     side: const BorderSide(color: Color(0xFFD0D5DD)),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                   ),
                 ),
               ),
@@ -309,13 +637,24 @@ class HomeScreen extends StatelessWidget {
               Expanded(
                 child: ElevatedButton.icon(
                   onPressed: () {},
-                  icon: const Icon(Icons.location_on_outlined, size: 18, color: Colors.white),
-                  label: const Text('Live Location',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  icon: const Icon(
+                    Icons.location_on_outlined,
+                    size: 18,
+                    color: Colors.white,
+                  ),
+                  label: const Text(
+                    'Live Location',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primaryGreen,
                     padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                     elevation: 0,
                   ),
                 ),
@@ -327,7 +666,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildQuickActionsCard() {
+  Widget _buildQuickActionsCard(BuildContext context, int notificationCount) {
     return _WhiteCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -339,38 +678,81 @@ class HomeScreen extends StatelessWidget {
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: const [
+            children: [
               _QuickAction(
                 icon: Icons.access_time,
-                bgColor: Color(0xFFE3F2E3),
+                bgColor: const Color(0xFFE3F2E3),
                 iconColor: AppColors.primaryGreen,
                 label: 'Ride Requests',
-                badgeCount: 2,
+                badgeCount: notificationCount > 0 ? notificationCount : null,
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const RideHistoryScreen(),
+                    ),
+                  );
+                },
               ),
               _QuickAction(
                 icon: Icons.chat_bubble_outline,
-                bgColor: Color(0xFFFCEBDD),
-                iconColor: Color(0xFFE07B2A),
+                bgColor: const Color(0xFFFCEBDD),
+                iconColor: const Color(0xFFE07B2A),
                 label: 'Messages',
-                badgeCount: 5,
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const ChatScreen(
+                        rideId: 'general',
+                        otherUserId: 'general',
+                        otherUserName: 'Messages',
+                      ),
+                    ),
+                  );
+                },
               ),
               _QuickAction(
                 icon: Icons.map_outlined,
-                bgColor: Color(0xFFDCEBFB),
-                iconColor: Color(0xFF1E88E5),
+                bgColor: const Color(0xFFDCEBFB),
+                iconColor: const Color(0xFF1E88E5),
                 label: 'Ride History',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const RideHistoryScreen(),
+                    ),
+                  );
+                },
               ),
               _QuickAction(
                 icon: Icons.star_border,
-                bgColor: Color(0xFFFBE3EC),
-                iconColor: Color(0xFFD6336C),
+                bgColor: const Color(0xFFFBE3EC),
+                iconColor: const Color(0xFFD6336C),
                 label: 'Reviews',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const RideHistoryScreen(),
+                    ),
+                  );
+                },
               ),
               _QuickAction(
                 icon: Icons.flag_outlined,
-                bgColor: Color(0xFFEEE3FA),
-                iconColor: Color(0xFF8E44AD),
+                bgColor: const Color(0xFFEEE3FA),
+                iconColor: const Color(0xFF8E44AD),
                 label: 'Report',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const RideHistoryScreen(),
+                    ),
+                  );
+                },
               ),
             ],
           ),
@@ -379,7 +761,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildRecentActivityCard() {
+  Widget _buildRecentActivityCard(List<RideModel> myRides) {
     return _WhiteCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -393,34 +775,60 @@ class HomeScreen extends StatelessWidget {
               ),
               TextButton(
                 onPressed: () {},
-                child: const Text('View All',
-                    style: TextStyle(color: AppColors.primaryGreen, fontWeight: FontWeight.w600)),
+                child: const Text(
+                  'View All',
+                  style: TextStyle(
+                    color: AppColors.primaryGreen,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
-          const _ActivityItem(
-            icon: Icons.directions_car_filled,
-            iconBg: Color(0xFFE3F2E3),
-            iconColor: AppColors.primaryGreen,
-            title: 'Ride request accepted',
-            route: 'PICT → Wakad',
-            time: 'Today, 7:45 AM',
-            statusLabel: 'Accepted',
-            statusBg: AppColors.acceptedBg,
-            statusColor: AppColors.acceptedText,
-          ),
-          const Divider(height: 28),
-          const _ActivityItem(
-            icon: Icons.access_time,
-            iconBg: Color(0xFFDCEBFB),
-            iconColor: Color(0xFF1E88E5),
-            title: 'Ride created',
-            route: 'PICT → Hinjawadi',
-            time: 'Yesterday, 6:20 PM',
-            statusLabel: 'Completed',
-            statusBg: AppColors.completedBg,
-            statusColor: AppColors.completedText,
-          ),
+          if (myRides.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 16),
+              child: Text(
+                "No recent activities yet.",
+                style: TextStyle(color: AppColors.textGrey),
+              ),
+            )
+          else
+            ...myRides.take(3).map((ride) {
+              final isCompleted = ride.status.toString().contains('completed');
+              final timeStr =
+                  "${ride.rideDate.day}/${ride.rideDate.month} ${ride.rideDate.hour}:${ride.rideDate.minute.toString().padLeft(2, '0')}";
+              return Column(
+                children: [
+                  _ActivityItem(
+                    icon: isCompleted
+                        ? Icons.check_circle_outline
+                        : Icons.directions_car_filled,
+                    iconBg: isCompleted
+                        ? const Color(0xFFDCEBFB)
+                        : const Color(0xFFE3F2E3),
+                    iconColor: isCompleted
+                        ? const Color(0xFF1E88E5)
+                        : AppColors.primaryGreen,
+                    title: 'Ride ${ride.status.toString().split('.').last}',
+                    route: '${ride.pickupLocation} → ${ride.dropLocation}',
+                    time: timeStr,
+                    statusLabel: ride.status
+                        .toString()
+                        .split('.')
+                        .last
+                        .toUpperCase(),
+                    statusBg: isCompleted
+                        ? AppColors.completedBg
+                        : AppColors.acceptedBg,
+                    statusColor: isCompleted
+                        ? AppColors.completedText
+                        : AppColors.acceptedText,
+                  ),
+                  if (ride != myRides.take(3).last) const Divider(height: 28),
+                ],
+              );
+            }),
         ],
       ),
     );
@@ -444,7 +852,10 @@ class _NotificationBell extends StatelessWidget {
             shape: BoxShape.circle,
             boxShadow: [BoxShadow(color: Color(0x14000000), blurRadius: 6)],
           ),
-          child: const Icon(Icons.notifications_none, color: AppColors.textDark),
+          child: const Icon(
+            Icons.notifications_none,
+            color: AppColors.textDark,
+          ),
         ),
         if (count > 0)
           Positioned(
@@ -452,12 +863,19 @@ class _NotificationBell extends StatelessWidget {
             right: -2,
             child: Container(
               padding: const EdgeInsets.all(4),
-              decoration: const BoxDecoration(color: AppColors.primaryGreen, shape: BoxShape.circle),
+              decoration: const BoxDecoration(
+                color: AppColors.primaryGreen,
+                shape: BoxShape.circle,
+              ),
               constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
               child: Text(
                 '$count',
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ),
@@ -510,12 +928,20 @@ class _ActionCard extends StatelessWidget {
             const SizedBox(height: 14),
             Text(
               title,
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppColors.textDark),
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: AppColors.textDark,
+              ),
             ),
             const SizedBox(height: 6),
             Text(
               subtitle,
-              style: const TextStyle(fontSize: 12, color: AppColors.textGrey, height: 1.3),
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textGrey,
+                height: 1.3,
+              ),
             ),
             const SizedBox(height: 10),
             Icon(Icons.arrow_forward, size: 18, color: arrowColor),
@@ -538,7 +964,13 @@ class _WhiteCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Color(0x0A000000), blurRadius: 10, offset: Offset(0, 4))],
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
       ),
       child: child,
     );
@@ -551,6 +983,7 @@ class _QuickAction extends StatelessWidget {
   final Color iconColor;
   final String label;
   final int? badgeCount;
+  final VoidCallback? onTap;
 
   const _QuickAction({
     required this.icon,
@@ -558,47 +991,68 @@ class _QuickAction extends StatelessWidget {
     required this.iconColor,
     required this.label,
     this.badgeCount,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 62,
-      child: Column(
-        children: [
-          Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(color: bgColor, shape: BoxShape.circle),
-                child: Icon(icon, color: iconColor, size: 24),
-              ),
-              if (badgeCount != null)
-                Positioned(
-                  top: -4,
-                  right: -4,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(color: Color(0xFFE53935), shape: BoxShape.circle),
-                    constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
-                    child: Text(
-                      '$badgeCount',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700),
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 62,
+        child: Column(
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, color: iconColor, size: 24),
+                ),
+                if (badgeCount != null)
+                  Positioned(
+                    top: -4,
+                    right: -4,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFE53935),
+                        shape: BoxShape.circle,
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 18,
+                        minHeight: 18,
+                      ),
+                      child: Text(
+                        '$badgeCount',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
                   ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 11, color: AppColors.textDark, fontWeight: FontWeight.w500),
-          ),
-        ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -644,20 +1098,45 @@ class _ActivityItem extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(route, style: const TextStyle(color: AppColors.textGrey, fontSize: 13)),
+                Text(
+                  route,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 13,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(time, style: const TextStyle(color: AppColors.textGrey, fontSize: 12)),
+                Text(
+                  time,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 12,
+                  ),
+                ),
               ],
             ),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(color: statusBg, borderRadius: BorderRadius.circular(20)),
+            decoration: BoxDecoration(
+              color: statusBg,
+              borderRadius: BorderRadius.circular(20),
+            ),
             child: Text(
               statusLabel,
-              style: TextStyle(color: statusColor, fontWeight: FontWeight.w600, fontSize: 12),
+              style: TextStyle(
+                color: statusColor,
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+              ),
             ),
           ),
           const SizedBox(width: 4),
