@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../providers/ride_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/ride_model.dart';
 import '../../widgets/custom_text_field.dart';
 import '../../widgets/custom_button.dart';
 import 'ride_detail_screen.dart';
+import 'package:dio/dio.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'dart:async';
 
 class FindRideScreen extends StatefulWidget {
-  const FindRideScreen({super.key});
+  final String? initialDropLocation;
+  const FindRideScreen({super.key, this.initialDropLocation});
 
   @override
   State<FindRideScreen> createState() => _FindRideScreenState();
@@ -22,7 +28,65 @@ class _FindRideScreenState extends State<FindRideScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialDropLocation != null) {
+      _dropController.text = widget.initialDropLocation!;
+    }
+    _autoDetectPickup();
     _fetchRides();
+  }
+
+  Future<void> _autoDetectPickup() async {
+    _pickupController.text = 'Detecting location...';
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _pickupController.text = '';
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+          _pickupController.text = '';
+          return;
+        }
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 5),
+        ),
+      );
+
+      List<Placemark> placemarks = await Geocoding().placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+        String address = '${place.name}, ${place.subLocality}, ${place.locality}'
+            .replaceAll(RegExp(r'^,\s*|,\s*,\s*|,\s*$'), '');
+        if (address.isEmpty || address == ', ') {
+          address = place.street ?? 'Unknown Location';
+        }
+        if (mounted) {
+          setState(() {
+            _pickupController.text = address;
+          });
+        }
+      } else {
+        _pickupController.text = '';
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _pickupController.text = '';
+        });
+      }
+    }
   }
 
   @override
@@ -40,8 +104,12 @@ class _FindRideScreenState extends State<FindRideScreen> {
   void _searchRides() {
     final rideProvider = Provider.of<RideProvider>(context, listen: false);
     rideProvider.fetchAvailableRides(
-      pickupLocation: _pickupController.text.trim().isEmpty ? null : _pickupController.text.trim(),
-      dropLocation: _dropController.text.trim().isEmpty ? null : _dropController.text.trim(),
+      pickupLocation: _pickupController.text.trim().isEmpty
+          ? null
+          : _pickupController.text.trim(),
+      dropLocation: _dropController.text.trim().isEmpty
+          ? null
+          : _dropController.text.trim(),
     );
   }
 
@@ -66,6 +134,93 @@ class _FindRideScreenState extends State<FindRideScreen> {
     }
   }
 
+  Future<List<String>> _getSuggestions(String query) async {
+    if (query.length < 3) return [];
+    try {
+      final response = await Dio().get(
+        'https://nominatim.openstreetmap.org/search',
+        queryParameters: {
+          'q': query,
+          'format': 'json',
+          'limit': 5,
+        },
+        options: Options(
+          headers: {'User-Agent': 'CarPoolApp/1.0'},
+        ),
+      );
+      if (response.statusCode == 200) {
+        final List data = response.data;
+        return data.map((e) => e['display_name'].toString()).toList();
+      }
+    } catch (e) {
+      debugPrint('Geocoding error: $e');
+    }
+    return [];
+  }
+
+  Widget _buildAutocompleteField({
+    required TextEditingController controller,
+    required String label,
+    required String hintText,
+    required IconData prefixIcon,
+  }) {
+    return RawAutocomplete<String>(
+      textEditingController: controller,
+      focusNode: FocusNode(),
+      optionsBuilder: (TextEditingValue textEditingValue) async {
+        if (textEditingValue.text.isEmpty) {
+          return const Iterable<String>.empty();
+        }
+        return await _getSuggestions(textEditingValue.text);
+      },
+      onSelected: (String selection) {
+        controller.text = selection;
+      },
+      fieldViewBuilder: (BuildContext context, TextEditingController fieldTextEditingController,
+          FocusNode fieldFocusNode, VoidCallback onFieldSubmitted) {
+        return CustomTextField(
+          controller: fieldTextEditingController,
+          focusNode: fieldFocusNode,
+          label: label,
+          hintText: hintText,
+          prefixIcon: prefixIcon,
+        );
+      },
+      optionsViewBuilder: (BuildContext context, AutocompleteOnSelected<String> onSelected, Iterable<String> options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4.0,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              constraints: const BoxConstraints(maxHeight: 200),
+              width: MediaQuery.of(context).size.width - 40,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (BuildContext context, int index) {
+                  final String option = options.elementAt(index);
+                  return InkWell(
+                    onTap: () => onSelected(option),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Text(option, style: const TextStyle(fontSize: 14)),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final rideProvider = Provider.of<RideProvider>(context);
@@ -85,100 +240,104 @@ class _FindRideScreenState extends State<FindRideScreen> {
         ),
         centerTitle: true,
       ),
-      body: Column(
-        children: [
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                CustomTextField(
-                  controller: _pickupController,
-                  label: 'Pickup Location',
-                  hintText: 'Enter pickup location',
-                  prefixIcon: Icons.my_location,
-                ),
-                const SizedBox(height: 12),
-                CustomTextField(
-                  controller: _dropController,
-                  label: 'Drop Location',
-                  hintText: 'Enter drop location',
-                  prefixIcon: Icons.location_on,
-                ),
-                const SizedBox(height: 12),
-                GestureDetector(
-                  onTap: _selectDate,
-                  child: AbsorbPointer(
-                    child: CustomTextField(
-                      controller: TextEditingController(
-                        text: _selectedDate != null
-                            ? '${_selectedDate!.day}/${_selectedDate!.month}/${_selectedDate!.year}'
-                            : '',
+      body: RefreshIndicator(
+        onRefresh: () async => _fetchRides(),
+        color: const Color(0xFF3C8C3C),
+        child: CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: Container(
+                color: Colors.white,
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    _buildAutocompleteField(
+                      controller: _pickupController,
+                      label: 'Pickup Location',
+                      hintText: 'Enter pickup location',
+                      prefixIcon: Icons.my_location,
+                    ),
+                    const SizedBox(height: 12),
+                    _buildAutocompleteField(
+                      controller: _dropController,
+                      label: 'Drop Location',
+                      hintText: 'Enter drop location',
+                      prefixIcon: Icons.location_on,
+                    ),
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: _selectDate,
+                      child: AbsorbPointer(
+                        child: CustomTextField(
+                          controller: TextEditingController(
+                            text: _selectedDate != null
+                                ? '${_selectedDate!.day}/${_selectedDate!.month}/${_selectedDate!.year}'
+                                : '',
+                          ),
+                          label: 'Date',
+                          hintText: 'Select date',
+                          prefixIcon: Icons.calendar_today,
+                        ),
                       ),
-                      label: 'Date',
-                      hintText: 'Select date',
-                      prefixIcon: Icons.calendar_today,
+                    ),
+                    const SizedBox(height: 16),
+                    CustomButton(
+                      text: 'Search Rides',
+                      onPressed: _searchRides,
+                      isLoading: rideProvider.isLoading,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            if (rideProvider.isLoading)
+              const SliverFillRemaining(
+                child: Center(
+                  child: CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Color(0xFF3C8C3C),
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                CustomButton(
-                  text: 'Search Rides',
-                  onPressed: _searchRides,
-                  isLoading: rideProvider.isLoading,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: rideProvider.isLoading
-                ? const Center(
-                    child: CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3C8C3C)),
-                    ),
-                  )
-                : rideProvider.availableRides.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.search_off,
-                              size: 80,
-                              color: Colors.grey[400],
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No rides found',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Try adjusting your search criteria',
-                              style: TextStyle(color: Colors.grey[500]),
-                            ),
-                          ],
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: () async => _fetchRides(),
-                        color: const Color(0xFF3C8C3C),
-                        child: ListView.builder(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: rideProvider.availableRides.length,
-                          itemBuilder: (context, index) {
-                            final ride = rideProvider.availableRides[index];
-                            return _RideCard(ride: ride);
-                          },
+              )
+            else if (rideProvider.availableRides.isEmpty)
+              SliverFillRemaining(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.search_off, size: 80, color: Colors.grey[400]),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No rides found',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.grey[600],
                         ),
                       ),
-          ),
-        ],
+                      const SizedBox(height: 8),
+                      Text(
+                        'Try adjusting your search criteria',
+                        style: TextStyle(color: Colors.grey[500]),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.all(16),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    final ride = rideProvider.availableRides[index];
+                    return _RideCard(ride: ride);
+                  }, childCount: rideProvider.availableRides.length),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -238,7 +397,11 @@ class _RideCard extends StatelessWidget {
                     const SizedBox(height: 2),
                     Row(
                       children: [
-                        const Icon(Icons.star, size: 14, color: Color(0xFFFFA500)),
+                        const Icon(
+                          Icons.star,
+                          size: 14,
+                          color: Color(0xFFFFA500),
+                        ),
                         const SizedBox(width: 4),
                         const Text(
                           '4.8',
@@ -254,7 +417,10 @@ class _RideCard extends StatelessWidget {
               ),
               if (isMyRide)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFE3F2E3),
                     borderRadius: BorderRadius.circular(12),
@@ -303,7 +469,11 @@ class _RideCard extends StatelessWidget {
                     const SizedBox(height: 12),
                     Row(
                       children: const [
-                        Icon(Icons.location_on, size: 14, color: Color(0xFFE53935)),
+                        Icon(
+                          Icons.location_on,
+                          size: 14,
+                          color: Color(0xFFE53935),
+                        ),
                         SizedBox(width: 6),
                         Text(
                           'Drop',
@@ -353,9 +523,7 @@ class _RideCard extends StatelessWidget {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => RideDetailScreen(ride: ride),
-                ),
+                MaterialPageRoute(builder: (_) => RideDetailScreen(ride: ride)),
               );
             },
             height: 44,
